@@ -120,7 +120,7 @@ do_load(int fd, symtab_t symtab)
 {
 	int rv;
 	size_t size;
-	Elf32_Ehdr ehdr;
+	Elf32_Ehdr ehdr;//elf文件的文件头，一定位于elf文件的开头
 	Elf32_Shdr *shdr = NULL, *p;
 	Elf32_Shdr *dynsymh, *dynstrh;
 	Elf32_Shdr *symh, *strh;
@@ -138,6 +138,7 @@ do_load(int fd, symtab_t symtab)
 		printf("elf error\n");
 		goto out;
 	}
+	//判断文件头中保存的魔数,ELFMAG，一共4个字节，对于正常的ELF文件来说，这个结构体是固定的
 	if (strncmp(ELFMAG, ehdr.e_ident, SELFMAG)) { /* sanity */
 		printf("not an elf\n");
 		goto out;
@@ -255,7 +256,7 @@ load_symtab(char *filename)
 
 
 static int
-load_memmap(pid_t pid, struct mm *mm, int *nmmp)
+load_memmap(pid_t pid, struct mm *mm, int *nmmp) // 根据pid从/proc/pid/map读取进程内存映射信息保存起来
 {
 	char raw[80000]; // this depends on the number of libraries an executable uses
 	char name[MAX_NAME_LEN];
@@ -301,7 +302,29 @@ load_memmap(pid_t pid, struct mm *mm, int *nmmp)
 			    &start, &end, name);
 
 		p = strtok(NULL, "\n");
+/*
+正常的map文件格式
+40096000-40098000 r-xp 00000000 b3:16 109        /system/bin/app_process
+40098000-40099000 r--p 00001000 b3:16 109        /system/bin/app_process
+40099000-4009a000 rw-p 00000000 00:00 0 
+4009a000-400a9000 r-xp 00000000 b3:16 176        /system/bin/linker
+400a9000-400aa000 r--p 0000e000 b3:16 176        /system/bin/linker
+400aa000-400ab000 rw-p 0000f000 b3:16 176        /system/bin/linker
+400ab000-400ae000 rw-p 00000000 00:00 0 
+400ae000-400b0000 r--p 00000000 00:00 0 
+400b0000-400b9000 r-xp 00000000 b3:16 855        /system/lib/libcutils.so
+400b9000-400ba000 r--p 00008000 b3:16 855        /system/lib/libcutils.so
+400ba000-400bb000 rw-p 00009000 b3:16 855        /system/lib/libcutils.so
+400bb000-400be000 r-xp 00000000 b3:16 955        /system/lib/liblog.so
+400be000-400bf000 r--p 00002000 b3:16 955        /system/lib/liblog.so
+400bf000-400c0000 rw-p 00003000 b3:16 955        /system/lib/liblog.so
+400c0000-40107000 r-xp 00000000 b3:16 832        /system/lib/libc.so
+40107000-40108000 ---p 00000000 00:00 0 
 
+只匹配到2个参数，说明最后名称为空，name统一赋值为MEMORT_ONLY
+
+名称为空的映射段不需要进行合并，直接continue进行下一行的处理
+*/
 		if (rv == 2) {
 			m = &mm[nmm++];
 			m->start = start;
@@ -314,7 +337,13 @@ load_memmap(pid_t pid, struct mm *mm, int *nmmp)
 			stack_start = start;
 			stack_end = end;
 		}
-
+/*
+代码走到这里说明是类似这种的映射
+400b0000-400b9000 r-xp 00000000 b3:16 855        /system/lib/libcutils.so
+400b9000-400ba000 r--p 00008000 b3:16 855        /system/lib/libcutils.so
+400ba000-400bb000 rw-p 00009000 b3:16 855        /system/lib/libcutils.so
+可能是对同一个so的映射，因此需要在mm中进行寻找，如果之前有相同那么的映射信息，进行合并，否则新建一个
+*/
 		/* search backward for other mapping with same name */
 		for (i = nmm-1; i >= 0; i--) {
 			m = &mm[i];
@@ -345,6 +374,12 @@ load_memmap(pid_t pid, struct mm *mm, int *nmmp)
    address.  If libc cannot be found return -1 and
    leave NAME and START untouched.  Otherwise return 0
    and null-terminated NAME. */
+   
+/*
+专门用来寻找libc在内存中的映射信息，传入mm的地址和映射信息的个数nmm
+name是查抄到的so的名称，这里libc可能是下面的名称'libc.so' or 'libc-[0-9]'
+start是libc在内存中的映射地址
+*/
 static int
 find_libc(char *name, int len, unsigned long *start,
 	  struct mm *mm, int nmm)
@@ -378,6 +413,9 @@ find_libc(char *name, int len, unsigned long *start,
 	return 0;
 }
 
+/*
+和find_libc类似，在mm中寻找linker，name是名称，start是地址
+*/
 static int
 find_linker_mem(char *name, int len, unsigned long *start,
 	  struct mm *mm, int nmm)
