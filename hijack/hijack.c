@@ -67,7 +67,9 @@ xmalloc(size_t size)
 	}
 	return p;
 }
-
+/*
+#fd so文件对应的fd
+*/
 static struct symlist *
 get_syms(int fd, Elf32_Shdr *symh, Elf32_Shdr *strh)
 {
@@ -115,6 +117,9 @@ out:
 	return ret;
 }
 
+/*
+从fd中读取so，把so的符号表，以及符号表对应的字符串表信息保存在一个symtab_t结构体中方便查找函数
+*/
 static int
 do_load(int fd, symtab_t symtab)
 {
@@ -246,7 +251,9 @@ out:
 	free(shdr);
 	return ret;
 }
-
+/*
+读取名为filename的so，把so的符号表，以及符号表对应的字符串表信息保存在一个symtab_t结构体中方便查找函数
+*/
 static symtab_t
 load_symtab(char *filename)
 {
