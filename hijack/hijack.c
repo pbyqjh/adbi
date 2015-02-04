@@ -68,7 +68,9 @@ xmalloc(size_t size)
 	return p;
 }
 /*
-#fd so文件对应的fd
+#int fd so文件对应的fd
+#Elf32_Shdr *symh 符号表起始地址，后面是一项一项的符号表
+#Elf32_Shdr *strh 符号表对应的字符串表的其实地址，每一项符号表的符号名称代表的是名称字符串在该表中的偏移位置
 */
 static struct symlist *
 get_syms(int fd, Elf32_Shdr *symh, Elf32_Shdr *strh)
@@ -513,7 +515,17 @@ lookup_func_sym(symtab_t s, char *name, unsigned long *val)
 {
 	return lookup_sym(s, STT_FUNC, name, val);
 }
+/*
+#pid_t pid 需要查找函数地址的进程pid
+#char *name 需要查找的函数的名称
+#unsigned long *addr用来返回查找到的函数的地址
 
+1首先通过load_memmap从proc文件下获取对应pid进程的内存映射情况
+2通过findlibc找出对应进程中libc加载到内存的中的地址
+3调用load_symtab读取so获取so的符号表信息
+4lookup_func_sym通过符号表信息获取要查找的函数相对于libc的偏移地址
+5计算出需要查找的函数在内存中的位置
+*/
 static int
 find_name(pid_t pid, char *name, unsigned long *addr)
 {
@@ -543,7 +555,9 @@ find_name(pid_t pid, char *name, unsigned long *addr)
 	*addr += libcaddr;
 	return 0;
 }
-
+/*
+查找linker在对应进程的地址空间中的地址
+*/
 static int find_linker(pid_t pid, unsigned long *addr)
 {
 	struct mm mm[1000];
@@ -672,7 +686,7 @@ int main(int argc, char *argv[])
 	char *arg;
 	int opt;
 	char *appname = 0;
- 
+ 	//正常使用为./hijack -d -p PID -l /data/local/tmp/libexample.so,使用了-p -d -l选项
  	while ((opt = getopt(argc, argv, "p:l:dzms:Z:D:")) != -1) {
 		switch (opt) {
 			case 'p':
@@ -739,6 +753,10 @@ int main(int argc, char *argv[])
 	//printf("tgt linker: %x\n", lkaddr2);
 	//printf("tgt dlopen : %x\n", lkaddr2 + (dlopenaddr - lkaddr));
 	dlopenaddr = lkaddr2 + (dlopenaddr - lkaddr);
+	/*
+	以上代码首先获取自身进程中dlopen函数相对于linker在内存中的偏移地址，
+	再获取目标进程中linker在内存中的地址，最后计算出目标进程中dlopen函数的地址
+	*/
 	if (debug)
 		printf("dlopen: 0x%x\n", dlopenaddr);
 
@@ -750,11 +768,12 @@ int main(int argc, char *argv[])
 	waitpid(pid, NULL, 0);
 	
 	if (appname) {	
+                //PTRACE_OTRACEFORK表示被跟踪的进程下次调用fork时停止，并自动跟踪新产生的进程
 		if (ptrace(PTRACE_SETOPTIONS, pid, (void*)1, (void*)(PTRACE_O_TRACEFORK))) {
 			printf("FATAL ERROR: ptrace(PTRACE_SETOPTIONS, ...)");
 			return -1;
 		}
-		ptrace(PTRACE_CONT, pid, (void*)1, 0);
+		ptrace(PTRACE_CONT, pid, (void*)1, 0);//PTRACE_CONT表示子进程继续执行
 
 		int t;
 		int stat;
@@ -766,9 +785,10 @@ int main(int argc, char *argv[])
 				if (debug > 1)
 					printf(".");
 				char fname[256];
-				sprintf(fname, "/proc/%d/cmdline", child_pid);
+				sprintf(fname, "/proc/%d/cmdline", child_pid);// #/proc/pid/cmdline文件中保存的是启动进程时使用的命令
 				int fp = open(fname, O_RDONLY);
 				if (fp < 0) {
+					//PTRACE_SYSCALL和PTRACE_CONT等价，但是会在下一个系统调用或者进程退出时暂停
 					ptrace(PTRACE_SYSCALL, child_pid, 0, 0);
 					continue;
 				}
@@ -776,6 +796,7 @@ int main(int argc, char *argv[])
 				close(fp);
 
 				if (strcmp(fname, appname) == 0) {
+					//appname是使用-s选项指定的
 					if (debug)
 						printf("zygote -> %s\n", fname);
 
