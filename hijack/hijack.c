@@ -151,7 +151,7 @@ do_load(int fd, symtab_t symtab)
 	/* section header table */
 	size = ehdr.e_shentsize * ehdr.e_shnum;
 	shdr = (Elf32_Shdr *) xmalloc(size);
-	rv = pread(fd, shdr, size, ehdr.e_shoff);
+	rv = pread(fd, shdr, size, ehdr.e_shoff);//ehdr.e_shoff表示的是section_header_table在文件中的偏移
 	if (0 > rv) {
 		//perror("read");
 		goto out;
@@ -163,8 +163,24 @@ do_load(int fd, symtab_t symtab)
 	
 	/* section header string table */
 	size = shdr[ehdr.e_shstrndx].sh_size;
+	/*
+	ehdr.e_shstrndx表示包含节名称的字符串是第几个节，这里shdr[ehdr.e_shstrndx]应该是包含节名称的节,是一个Elf32_Shdr类型的指针
+	定义如下
+	typedef struct {
+        elf32_Word      sh_name;//节的名称，实际上是段名字符串在.shstrtab段中的偏移,而ehdr.e_shstrndx是shstrtab在所有段表中的序号
+        Elf32_Word      sh_type;
+        Elf32_Word      sh_flags;
+        Elf32_Addr      sh_addr;//如果节被加载在内存中，代表在内存中的起始位置
+        Elf32_Off       sh_offset;//文件开头到节的第一个字节的偏移
+        Elf32_Word      sh_size;//节的大小
+        Elf32_Word      sh_link;
+        Elf32_Word      sh_info;
+        Elf32_Word      sh_addralign;
+        Elf32_Word      sh_entsize;
+        } Elf32_Shdr;
+	*/
 	shstrtab = (char *) xmalloc(size);
-	rv = pread(fd, shstrtab, size, shdr[ehdr.e_shstrndx].sh_offset);
+	rv = pread(fd, shstrtab, size, shdr[ehdr.e_shstrndx].sh_offset);//从文件中读取包含节名称的节
 	if (0 > rv) {
 		//perror("read");
 		goto out;
@@ -177,21 +193,21 @@ do_load(int fd, symtab_t symtab)
 	/* symbol table headers */
 	symh = dynsymh = NULL;
 	strh = dynstrh = NULL;
-	for (i = 0, p = shdr; i < ehdr.e_shnum; i++, p++)
-		if (SHT_SYMTAB == p->sh_type) {
+	for (i = 0, p = shdr; i < ehdr.e_shnum; i++, p++)//ehdr.e_shnum代表的是所有的节的个数
+		if (SHT_SYMTAB == p->sh_type) {//符号表
 			if (symh) {
 				printf("too many symbol tables\n");
 				goto out;
 			}
 			symh = p;
-		} else if (SHT_DYNSYM == p->sh_type) {
+		} else if (SHT_DYNSYM == p->sh_type) {//动态链接符号表
 			if (dynsymh) {
 				printf("too many symbol tables\n");
 				goto out;
 			}
 			dynsymh = p;
-		} else if (SHT_STRTAB == p->sh_type
-			   && !strncmp(shstrtab+p->sh_name, ".strtab", 7)) {
+		} else if (SHT_STRTAB == p->sh_type  
+			   && !strncmp(shstrtab+p->sh_name, ".strtab", 7)) {//字符串表
 			if (strh) {
 				printf("too many string tables\n");
 				goto out;
