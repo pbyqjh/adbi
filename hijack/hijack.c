@@ -587,7 +587,7 @@ write_mem(pid_t pid, unsigned long *buf, int nlong, unsigned long pos)
 {
 	unsigned long *p;
 	int i;
-
+	//PTRACE_POKETEXT往目标进程的中写如一个字节
 	for (p = buf, i = 0; i < nlong; p++, i++)
 		if (0 > ptrace(PTRACE_POKETEXT, pid, (void *)(pos+(i*4)), (void *)*p))
 			return -1;
@@ -627,18 +627,18 @@ unsigned int sc_old[] = {
 };
 
 unsigned int sc[] = {
-0xe59f0040, //        ldr     r0, [pc, #64]   ; 48 <.text+0x48>
-0xe3a01000, //        mov     r1, #0  ; 0x0
-0xe1a0e00f, //        mov     lr, pc
-0xe59ff038, //        ldr     pc, [pc, #56]   ; 4c <.text+0x4c>
-0xe59fd02c, //        ldr     sp, [pc, #44]   ; 44 <.text+0x44>
+0xe59f0040, //        ldr     r0, [pc, #64]   ; 48 <.text+0x48> 把libname的addr赋值给ro寄存器
+0xe3a01000, //        mov     r1, #0  ; 0x0                     0赋值给r1寄存器
+0xe1a0e00f, //        mov     lr, pc				pc寄存器的值赋值给lr寄存器，函数返回后会继续执行ldr pc, [pc, #56]
+0xe59ff038, //        ldr     pc, [pc, #56]   ; 4c <.text+0x4c> 把pc+56地址的内容(dlopen的地址)赋值给pc寄存器，就是执行dlopen(libname,0)
+0xe59fd02c, //        ldr     sp, [pc, #44]   ; 44 <.text+0x44> 调用dlopen已经返回，开始还原寄存器
 0xe59f0010, //        ldr     r0, [pc, #20]   ; 30 <.text+0x30>
 0xe59f1010, //        ldr     r1, [pc, #20]   ; 34 <.text+0x34>
 0xe59f2010, //        ldr     r2, [pc, #20]   ; 38 <.text+0x38>
 0xe59f3010, //        ldr     r3, [pc, #20]   ; 3c <.text+0x3c>
 0xe59fe010, //        ldr     lr, [pc, #20]   ; 40 <.text+0x40>
 0xe59ff010, //        ldr     pc, [pc, #20]   ; 44 <.text+0x44>
-0xe1a00000, //        nop                     r0
+0xe1a00000, //        nop                     r0                        sc[11]
 0xe1a00000, //        nop                     r1 
 0xe1a00000, //        nop                     r2 
 0xe1a00000, //        nop                     r3 
@@ -872,7 +872,7 @@ int main(int argc, char *argv[])
 		exit(1);
 	}
 	ptrace(PTRACE_GETREGS, pid, 0, &regs);
-
+	//PTRACE_GETREGS用来读取所用17个寄存器的值存放在regs中
 
 	// setup variables of the loading and fixup code	
 	/*
@@ -901,10 +901,14 @@ int main(int argc, char *argv[])
 
 	// push library name to stack
 	libaddr = regs.ARM_sp - n*4 - sizeof(sc);
+	//这里堆栈指针向下移动n*4(so名称长度),sizeof(sc)(sc数组长度),计算想目标进程堆栈中写数据的地址
 	sc[18] = libaddr;	
 	//sc[14] = libaddr;
 	//printf("libaddr: %x\n", libaddr);
 
+	/*
+	stack_start应该已经通过load_memmap获取了，这里如果没有获取到的话才会走下面的分支
+	*/
 	if (stack_start == 0) {
 		stack_start = (unsigned long int) strtol(argv[3], NULL, 16);
 		stack_start = stack_start << 12;
@@ -915,6 +919,7 @@ int main(int argc, char *argv[])
 	
 	// write library name to stack
 	if (0 > write_mem(pid, (unsigned long*)arg, n, libaddr)) {
+		//arg是so名称写到目标进程的堆栈中
 		printf("cannot write library name (%s) to stack, error!\n", arg);
 		exit(1);
 	}
@@ -922,6 +927,7 @@ int main(int argc, char *argv[])
 	// write code to stack
 	codeaddr = regs.ARM_sp - sizeof(sc);
 	if (0 > write_mem(pid, (unsigned long*)&sc, sizeof(sc)/sizeof(long), codeaddr)) {
+		//sc是我们自己构造的机器码数组，写到目标进程的堆栈中
 		printf("cannot write code, error!\n");
 		exit(1);
 	}
@@ -930,8 +936,19 @@ int main(int argc, char *argv[])
 		printf("executing injection code at 0x%x\n", codeaddr);
 
 	// calc stack pointer
+	//上面向目标进程写了n*4+sizeof(sc)字节的内容，对目标进程的堆栈指针进行扩充，一般堆栈是向低地址扩展的，所以用减法
 	regs.ARM_sp = regs.ARM_sp - n*4 - sizeof(sc);
 
+/*
+下面的代码是调用mprotect修改整个堆栈段权限，
+首先是第一个参数stack_start,起始地址
+第二个参数长度
+第三个参数PROT_READ|PROT_WRITE|PROT_EXEC  可读可写可执行
+最后把之前获取到的mprotectaddr的地址赋值给pc寄存器，进行函数调用
+在调用之前还把codeaddr的地址赋值给lr寄存器，当mprotect函数执行完毕之后就会返回到codeaddr处
+codeaddr = regs.ARM_sp - sizeof(sc)
+也就是说mprotect执行完之后会去执行我们在sc中构造的语句
+*/
 	// call mprotect() to make stack executable
 	regs.ARM_r0 = stack_start; // want to make stack executable
 	//printf("r0 %x\n", regs.ARM_r0);
@@ -952,8 +969,8 @@ int main(int argc, char *argv[])
 	}
 	
 	// detach and continue
-	ptrace(PTRACE_SETREGS, pid, 0, &regs);
-	ptrace(PTRACE_DETACH, pid, 0, (void *)SIGCONT);
+	ptrace(PTRACE_SETREGS, pid, 0, &regs);//为指定进程设置寄存器
+	ptrace(PTRACE_DETACH, pid, 0, (void *)SIGCONT);//结束跟踪
 
 	if (debug)
 		printf("library injection completed!\n");
